@@ -1,0 +1,89 @@
+#include "can2040.c" // can2040_setup
+#include <stdio.h>   //IO std library
+#include "pico/stdlib.h" //Pico Library for GPIO use
+//#include "hardware/pio.h" //Pico Library for GPIO use
+
+typedef struct can2040_msg CANMsg;
+typedef struct can2040_msg RecCANMsg;
+static struct can2040 cbus;
+
+static void
+can2040_cb(struct can2040 *cd, uint32_t notify, struct can2040_msg *msg)
+{
+    // Add message processing code here...
+    printf("Test printing the 'Info in the function\n");
+    printf("Pointer: %p \n",*msg);
+    printf("hexPointer: %02x \n",*msg);
+    printf("MsgIDInt: %d \n",msg->id);
+    printf("MsgIDHex: %02x \n",msg->id);
+    printf("MsgIDDLC: %d \n",msg->dlc);
+    printf("MsgDataHex: %02x ",msg->data[0]);
+    printf(", %02x",msg->data[1]);
+    printf(", %02x",msg->data[2]);
+    printf(", %02x \n",msg->data[3]);
+    
+    
+    
+}
+
+static void
+PIOx_IRQHandler(void)
+{
+    can2040_pio_irq_handler(&cbus);
+}
+
+void
+canbus_setup(void)
+{
+    uint32_t pio_num = 0;
+    uint32_t sys_clock = 125000000, bitrate = 125000;
+    uint32_t gpio_rx = 4, gpio_tx = 5;
+
+    // Setup canbus
+    can2040_setup(&cbus, pio_num);
+    can2040_callback_config(&cbus, can2040_cb);
+
+    // Enable irqs
+    irq_set_exclusive_handler(PIO0_IRQ_0_IRQn, PIOx_IRQHandler);
+    NVIC_SetPriority(PIO0_IRQ_0_IRQn, 1);
+    NVIC_EnableIRQ(PIO0_IRQ_0_IRQn);
+
+    // Start canbus
+    can2040_start(&cbus, sys_clock, bitrate, gpio_rx, gpio_tx);
+}
+
+int main()
+{
+    stdio_init_all();
+    canbus_setup();
+
+    const uint LED_PIN = PICO_DEFAULT_LED_PIN;
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+    while (true) {
+        CANMsg test = {0};
+        test.dlc = 8;
+        test.id = 0x01;
+        test.data[0] = 0x02;
+        test.data[1] = 0x02;
+        test.data[2] = 0x02;
+        test.data[3] = 0x02;
+        test.data[4] = 0x02;
+        test.data[5] = 0x02;
+        test.data[6] = 0x02;
+        test.data[7] = 0x02;
+        int res = can2040_transmit(&cbus, &test);
+        printf("Sending! returned: %d\n", res);
+
+        //printf("LED ON!\n");
+        gpio_put(LED_PIN, 1);
+        sleep_ms(250);
+        //printf("LED OFF!\n");
+        gpio_put(LED_PIN, 0);
+        sleep_ms(250);
+        sleep_ms(5000);
+    }
+
+
+    return 0;
+}
