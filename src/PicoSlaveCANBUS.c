@@ -4,23 +4,24 @@
 %	from the Hochschule Flensbug.
 %	Based on Software CANbus implementation for rp2040 from Kevin O'Connor 
 %	<kevin@koconnor.net>
-%   Name:           Raspberry Pi Pico slave test script
+%   Name:           Raspberry Pi Pico slave script
 %   Description:    Script for CANBUS communication protocol using a 
 %					Raspberry Pi Pico and a CAN tranceiver to make the
 %					communication possible. In this case a MCP2551 tranceiver
-%					was using with every Raspberry Pi Pico.
-%					This Program is just a basic test script for testing the
-&					sensor behaviour, this approach should be implemented
-&					in a main program and/or another platform
+%					was using with every Raspberry Pi Pico.  The script waits
+%					for a remote frame canbus message with an specific
+%					message ID, in case the  remote/request messages come
+%					then the system sends a temperature and humidity measurement
+%					in the CANBUS line. This messages are supossed to be
+%					further procesed by the ESP32 master in the CANBUS line.
 %   Date:           06/12/2023      
 %   Programmer:     Hugo Valentin Castro Saenz
 %   History:
-%	V01:			Receive and identify what type of message is in the line
+%	V01:			Send temeprature and humidy messages when remote message acquired.
 %	
 %  
 % 
 % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*/
-//Libraries
 #include "can2040.c" // can2040_setup
 #include <stdio.h>   //IO std library
 #include "pico/stdlib.h" //Pico Library for GPIO use
@@ -32,11 +33,19 @@
 #define CONFIG_RP2040_CANBUS_GPIO_CORE    0  // GPIO 5 <=> CAN RX
 #define FREQ_SYS 125000000
 
+static struct can2040 cbus; //Variable for the CANBUS
 typedef struct can2040_msg CANMsg; //Struct for cleaner coding below
-static struct can2040 cbus;
+CANMsg latest_RXmsg = {};
+static volatile uint32_t latest_notify = 0;
+static volatile bool newRX_message = false;
 
-static void
-can2040_cb(struct can2040 *cd, uint32_t notify, struct can2040_msg *msg)
+const uint LED_PIN = PICO_DEFAULT_LED_PIN; //Set the LED for the PICO board
+static int RemoteFrameID = 0x40000063; //RemoteFrameID 99 ist equal to HEX 0x63, bit at the beginning 4, is for the remote transmission request flag
+static float Temperature = 10.5;
+static float Humidity = 80;
+
+
+static void can2040_cb(struct can2040 *cd, uint32_t notify, struct can2040_msg *msg)
 {
     // Add message processing code here...
     /*printf("Test printing the 'Info in the function\n");
@@ -54,39 +63,25 @@ can2040_cb(struct can2040 *cd, uint32_t notify, struct can2040_msg *msg)
 	//Check if the message was sent/received/error message
 	if (notify == CAN2040_NOTIFY_RX)
     {
-        printf("Recv msg: id: %0x, size: %0x, data: ", msg->id, msg->dlc);
-		//Loop for printing the message data
-		for (int i = 0; i < msg->dlc; i++) {
-			printf("%0x, ", msg->data[i]);
-		}
-		printf("\n");
+		newRX_message = true;
+		latest_notify = notify;
+		latest_RXmsg = *msg;
+	  
     } else if (notify == CAN2040_NOTIFY_TX) {
-        printf("Confirmed tx msg: id: %0x, size: %0x, data: ", msg->id, msg->dlc);
-		//Loop for printing the message data
-		for (int i = 0; i < msg->dlc; i++) {
-			printf("%0x, ", msg->data[i]);
-		}
-		printf("\n");
+
     } else if (notify & CAN2040_NOTIFY_ERROR) {
-        printf("Error(%d) on msg: id: %0x, size: %0x, data: ", msg->id, msg->dlc);
-		//Loop for printing the message data
-		for (int i = 0; i < msg->dlc; i++) {
-			printf("%0x, ", msg->data[i]);
-		}
-		printf("\n");
+
     }
 }
 
 // Main PIO irq handler
-static void
-PIOx_IRQHandler(void)
+static void PIOx_IRQHandler(void)
 {
     can2040_pio_irq_handler(&cbus);
 }
 
 //CANBUS setup und start method
-void
-canbus_setup(void)
+void canbus_setup(void)
 {
     // Setup canbus
     can2040_setup(&cbus, CONFIG_RP2040_CANBUS_GPIO_CORE);
@@ -103,46 +98,59 @@ canbus_setup(void)
     can2040_start(&cbus, FREQ_SYS, CONFIG_CANBUS_FREQUENCY, CONFIG_RP2040_CANBUS_GPIO_RX, CONFIG_RP2040_CANBUS_GPIO_TX);
 }
 
+//CANBUS send message routine
+void canbus_sendmessage(struct can2040_msg msg){
+	//Check if the TX buffer is available for new TX messages
+	if (can2040_check_transmit(&cbus)) {
+		//Transmit the created messages
+		int res = can2040_transmit(&cbus, &msg);
+		if (!res) {
+			printf("Message sended\n");
+			gpio_put(LED_PIN, 1); //printf("LED ON!\n");
+		}
+		else{
+			printf("Failed\n");
+			gpio_put(LED_PIN, 0); //printf("LED OFF!\n");
+		}
+	}
+}
+
 //Main method
 int main()
 {
 	//Init all and start the CANBUS
     stdio_init_all();
     canbus_setup();
-    const uint LED_PIN = PICO_DEFAULT_LED_PIN; //Set the LED for the PICO board
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 	
-	//Initialize the different messages that should be sent
-	CANMsg ExtMsg = {
-            .id = 0xffff | CAN2040_ID_EFF, //CAN2040_ID_EFF and CAN2040_ID_RTR configuration is possible
-            .dlc = 8,
-            .data = {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff}
+	//Initialize the temperature message.
+	CANMsg TempMsg = {
+		.id = 0xff01 | CAN2040_ID_EFF, //CAN2040_ID_EFF and CAN2040_ID_RTR configuration bis possible
+		.dlc = 4,
+		.data32[0] = Temperature
+	};
+	
+	CANMsg HumidMsg = {
+		.id = 0xaa01 | CAN2040_ID_EFF, //CAN2040_ID_EFF and CAN2040_ID_RTR configuration bis possible
+		.dlc = 4,
+		.data32[0] = Humidity
 	};
 	
     while (true) {
-		
-		//Initialize the message to be sent
-        CANMsg Test = {
-			.id = 0x01, //CAN2040_ID_EFF and CAN2040_ID_RTR configuration is possible
-            .dlc = 8,
-            .data = {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff}
-		};
-		
-		//Check if the TX buffer is available for new TX messages
-		if (can2040_check_transmit(&cbus)) {
-			//Transmit the created messages
-			int res = can2040_transmit(&cbus, &ExtMsg);
-			if (!res) {
-				printf("Message sended\n");
-				gpio_put(LED_PIN, 1); //printf("LED ON!\n");
+		//Check for new RX messages, check if the ID is the ID of the message is the one according to the remote message asking for the sensors information
+		if(newRX_message){
+			newRX_message = false;
+			if(latest_RXmsg.id == RemoteFrameID){ //If True, the master sent a remote message to ask for sensor information
+				canbus_sendmessage(TempMsg);
+				canbus_sendmessage(HumidMsg);
 			}
 			else{
-				printf("Failed\n");
-				gpio_put(LED_PIN, 0); //printf("LED OFF!\n");
+				printf("WrongID\n");
+				printf("MsgIDHex: %02x \n",latest_RXmsg.id);
+				printf("\n");
 			}
 		}
-        sleep_ms(1000); //Delay for diff, purposes
     }
     return 0;
 }
